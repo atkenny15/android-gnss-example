@@ -2,7 +2,12 @@ package com.example.myapplication
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -46,7 +51,13 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun BLEScanScreen() {
         var isScanning by remember { mutableStateOf(false) }
-        var scanCb by remember { mutableStateOf(MyScanCallback()) }
+        var scanCb by remember {
+            mutableStateOf(MyScanCallback({ cb ->
+                Log.i("tag", "onFinish -> stopScan")
+                stopScan(cb)
+                isScanning = false
+            }))
+        }
 
         Column(
             modifier = Modifier
@@ -62,12 +73,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     if (checkPermissions()) {
                         Log.i("tag", "startScan()")
-                        startScan (scanCb) { results ->
-                            if (results[0].device.name == "FlySight") {
-                                stopScan(scanCb)
-                                isScanning = false
-                            }
-                        }
+                        startScan(scanCb)
                         isScanning = true
                     } else {
                         requestPermissions()
@@ -77,23 +83,25 @@ class MainActivity : ComponentActivity() {
                 Text(if (isScanning) "Stop Scanning" else "Start Scanning")
             }
 
-            if (!scanCb.onResults.isEmpty()) {
-                Button({}) {
+            if (!isScanning && scanCb.result != null) {
+                Button({
+                    pairDevice(scanCb.result?.device!!)
+                }) {
                     Text("Pair")
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-            LazyColumn {
-                items(scanCb.onResults) { result ->
-                    Text("Device: ${result.device.name ?: "Unknown"} - ${result.device.address}")
-                }
+                Text("Device: ${scanCb.result?.device?.name ?: "Unknown"} - ${scanCb.result?.device?.address ?: "Unknown"}")
             }
         }
     }
 
-    private fun startScan(scanCb: MyScanCallback, onResults: (List<ScanResult>) -> Unit) {
+    private fun pairDevice(dev: BluetoothDevice) {
+        dev.connectGatt(this, true, MyBluetoothGattCallback())
+    }
+
+    private fun startScan(scanCb: MyScanCallback) {
         if (ActivityCompat.checkSelfPermission(
                 this,
                 Manifest.permission.ACCESS_FINE_LOCATION
@@ -165,25 +173,107 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-class MyScanCallback : ScanCallback() {
-    val onResults = listOf<ScanResult>()
+class MyScanCallback(onFinish: (MyScanCallback) -> Unit)  : ScanCallback() {
+    var result: ScanResult? = null
+    val onFinish = onFinish
 
     override fun onScanResult(callbackType: Int, result: ScanResult) {
         super.onScanResult(callbackType, result)
         Log.i("tag", "found ${result.device.name} : ${result.device.address}")
-        onResults(listOf(result))  // Add more logic for handling results as needed
+
+        if (this.result != null) {
+            return
+        }
+
+        if (result.device.name == "FlySight") {
+            Log.i("tag", "found")
+            this.result = result
+            onFinish(this)
+        }
     }
 
     override fun onBatchScanResults(results: List<ScanResult>) {
         super.onBatchScanResults(results)
+
+        if (this.result != null) {
+            return
+        }
+
         for (result in results) {
             Log.i("tag", "found ${result.device.name} : ${result.device.address}")
+            if (result.device.name == "FlySight") {
+                Log.i("tag", "found")
+                this.result = result
+                onFinish(this)
+                break;
+            }
         }
-        onResults(results)
     }
 
     override fun onScanFailed(errorCode: Int) {
         super.onScanFailed(errorCode)
         Log.e("tag", "scan failed ${errorCode}")
+    }
+}
+
+class MyBluetoothGattCallback : BluetoothGattCallback() {
+    override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        Log.i("tag", "state change $status $newState")
+
+        when (newState) {
+            BluetoothProfile.STATE_CONNECTED -> {
+                Log.i("tag", "connected")
+                // Successfully connected to the device
+                gatt.discoverServices() // Discover services after successful connection
+            }
+            BluetoothProfile.STATE_DISCONNECTED -> {
+                Log.i("tag", "disconnected")
+                // Device disconnected
+                gatt.close() // Always close the connection
+            }
+        }
+    }
+
+    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+        Log.i("tag", "services discovered $status")
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            // Services discovered, you can now read/write characteristics
+            val services = gatt.services
+            // Example: Reading a characteristic
+            services.forEach { service ->
+                /*
+                val characteristic = service.getCharacteristic(YOUR_CHARACTERISTIC_UUID)
+                if (characteristic != null) {
+                    gatt.readCharacteristic(characteristic) // Read characteristic
+                }
+                */
+            }
+        }
+    }
+
+    override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+        Log.i("tag", "char read $status")
+
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            // Characteristic read successfully
+            val value = characteristic.value
+            // Process the value as needed
+        }
+    }
+
+    override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+        Log.i("tag", "char write $status")
+
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            // Characteristic written successfully
+        }
+    }
+
+    override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        Log.i("tag", "char changed")
+
+        // Called when a characteristic's value is changed
+        val value = characteristic.value
+        // Process the updated value
     }
 }

@@ -53,23 +53,28 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun BLEScanScreen() {
         var isScanning by remember { mutableStateOf(false) }
+        var gnssText by remember { mutableStateOf(String()) }
         var scanCb by remember {
-            mutableStateOf(MyScanCallback({ cb ->
+            mutableStateOf(MyScanCallback { cb ->
                 Log.i("tag", "onFinish -> stopScan")
                 stopScan(cb)
                 isScanning = false
-            }))
+            })
         }
         var gatt by remember {
             mutableStateOf<BluetoothGatt?>(null)
+        }
+
+        var updateText = { text: String ->
+            gnssText = text
         }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.Top
         ) {
             Button(onClick = {
                 if (isScanning) {
@@ -102,23 +107,26 @@ class MainActivity : ComponentActivity() {
                     }) {
                         Text("Pair")
                     }
+                    Spacer(modifier = Modifier.height(16.dp))
                     Button({
-                        gatt = setupGatt(scanCb.result!!.device!!, gatt)
+                        gatt = setupGatt(scanCb.result!!.device!!, gatt, updateText)
                     }) {
                         Text("Test GATT")
                     }
                 }
-
                 Spacer(modifier = Modifier.height(16.dp))
-
                 Text("Device: ${scanCb.result?.device?.name ?: "Unknown"} - ${scanCb.result?.device?.address ?: "Unknown"}")
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(gnssText)
             }
         }
     }
 
-    private fun setupGatt(dev: BluetoothDevice, gatt: BluetoothGatt?): BluetoothGatt? {
+    private fun setupGatt(
+        dev: BluetoothDevice, gatt: BluetoothGatt?, updateGnssText: (String) -> Unit
+    ): BluetoothGatt? {
         if (gatt == null) {
-            return dev.connectGatt(this, false, MyBluetoothGattCallback())
+            return dev.connectGatt(this, false, MyBluetoothGattCallback(updateGnssText))
         } else {
             gatt.disconnect()
             return null
@@ -267,11 +275,11 @@ class MyScanCallback(onFinish: (MyScanCallback) -> Unit) : ScanCallback() {
     }
 }
 
-class MyBluetoothGattCallback : BluetoothGattCallback() {
+class MyBluetoothGattCallback(updateText: (String) -> Unit) : BluetoothGattCallback() {
+    val updateText = updateText;
     val GNSS_PV_UUID = UUID.fromString("00000000-8e22-4541-9d4c-21edae82ed19");
-
     //val CRS_TX_UUID = UUID.fromString("00000001-8e22-4541-9d4c-21edae82ed19")
-    val CRS_RX_UUID = UUID.fromString("00000002-8e22-4541-9d4c-21edae82ed19");
+    //val CRS_RX_UUID = UUID.fromString("00000002-8e22-4541-9d4c-21edae82ed19");
 
     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
         super.onConnectionStateChange(gatt, status, newState)
@@ -294,45 +302,22 @@ class MyBluetoothGattCallback : BluetoothGattCallback() {
 
     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
         super.onServicesDiscovered(gatt, status)
-
         Log.i("tag", "services discovered $status")
-
         if (status == BluetoothGatt.GATT_SUCCESS) {
-            // Services discovered, you can now read/write characteristics
-            val services = gatt.services
-            // Example: Reading a characteristic
-            services.forEach { service ->
-                Log.i("tag", "service ${service.uuid.toString()}")
-                for (char in service.characteristics) {
-                    Log.i("tag", "char: ${char.uuid.toString()}")
-                }
-
-
-                var char = service.getCharacteristic(GNSS_PV_UUID)
-                if (char != null) {
-                    var desc = char.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                    if (desc == null) {
-                        Log.e("tag", "desc is null")
-                        /*
-                        desc = BluetoothGattDescriptor(
-                            GNSS_PV_UUID, BluetoothGattDescriptor.PERMISSION_READ_ENCRYPTED
-                        )
-                        char.addDescriptor(desc)
-                        */
-                    }
-
-                    if (gatt.setCharacteristicNotification(char, true)) {
-                        Log.i("tag", "notification enabled")
-                    } else {
-                        Log.e("tag", "notification could not be enabled")
-                    }
-                    val wr_status = gatt.writeDescriptor(
-                        desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    )
-                    Log.i("tag", "gnss write status: $wr_status")
-
-                }
+            if (gatt.requestMtu(256)) {
+                Log.i("tag", "requestMtu successful")
+            } else {
+                Log.e("tag", "requestMtu unsuccessful")
             }
+        }
+    }
+
+    override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+        super.onMtuChanged(gatt, mtu, status)
+        Log.i("tag", "MTU changed $mtu $status")
+        if (gatt != null && status == BluetoothGatt.GATT_SUCCESS) {
+            Log.i("tag", "enable gnss notifications")
+            enableGnssNotifications(gatt, GNSS_PV_UUID)
         }
     }
 
@@ -343,12 +328,7 @@ class MyBluetoothGattCallback : BluetoothGattCallback() {
         status: Int
     ) {
         super.onCharacteristicRead(gatt, characteristic, value, status)
-        var valueString = "{"
-        for (byte in value) {
-            valueString += "${byte.toString(radix = 16)},"
-        }
-        valueString += "}"
-        Log.i("tag", "char read $status: ${valueString}")
+        logBytes("char read $status", value)
     }
 
     override fun onCharacteristicWrite(
@@ -362,15 +342,95 @@ class MyBluetoothGattCallback : BluetoothGattCallback() {
         gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray
     ) {
         super.onCharacteristicChanged(gatt, characteristic, value)
-        Log.i("tag", "char changed: ${value}")
+        logBytes("char ${characteristic.uuid} changed", value)
+        if (characteristic.uuid == GNSS_PV_UUID) {
+            if (value.size != 28) {
+                Log.e("tag", "Got ${value.size} bytes but expected 28 for GNSS characteristic")
+            } else {
+                val data = GnssData(value)
+                updateText(data.toString())
+                Log.i("tag", "data: ${data}")
+            }
+        }
     }
 
     override fun onDescriptorWrite(
-        gatt: BluetoothGatt?,
-        descriptor: BluetoothGattDescriptor?,
-        status: Int
+        gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int
     ) {
         super.onDescriptorWrite(gatt, descriptor, status)
         Log.i("tag", "desc write $status")
+    }
+}
+
+fun logBytes(string: String, value: ByteArray) {
+    var valueString = "size=${value.size} {"
+    for (byte in value) {
+        valueString += "${byte.toString(radix = 16)},"
+    }
+    valueString += "}"
+    Log.i("tag", "$string: ${valueString}")
+}
+
+class GnssData {
+    val iTow: UInt;
+    val lon: Int;
+    val lat: Int;
+    val hMsl: Int;
+    val velN: Int;
+    val velE: Int;
+    val velD: Int;
+
+    constructor(bytes: ByteArray) {
+        iTow = getInt(bytes, 0).toUInt()
+        lon = getInt(bytes, 4)
+        lat = getInt(bytes, 8)
+        hMsl = getInt(bytes, 12)
+        velN = getInt(bytes, 16)
+        velE = getInt(bytes, 20)
+        velD = getInt(bytes, 24)
+    }
+
+    override fun toString(): String {
+        return "${iTow.toDouble() / 1e3}, ${lon.toDouble() / 1e7}, ${lat.toDouble() / 1e7}, " + "${hMsl.toDouble() / 1e3}, ${velN.toDouble() / 1e3}, ${velE.toDouble() / 1e3}, " + "${velD.toDouble() / 1e3}"
+    }
+}
+
+fun getInt(bytes: ByteArray, offset: Int): Int {
+    var ret: UInt = 0U
+    for (i in 0..3) {
+        ret = ret or (bytes[offset + i].toUByte().toUInt() shl (i * 8))
+    }
+    return ret.toInt()
+}
+
+fun enableGnssNotifications(gatt: BluetoothGatt, uuid: UUID) {
+    val services = gatt.services
+    services.forEach { service ->
+        Log.i("tag", "service ${service.uuid.toString()}")
+        for (char in service.characteristics) {
+            Log.i("tag", "char: ${char.uuid.toString()}")
+        }
+
+        var char = service.getCharacteristic(uuid)
+        if (char != null) {
+            if (char.descriptors.isEmpty()) {
+                Log.e("tag", "no descriptors for GNSS_PV_UUID")
+            } else {
+                if (gatt.setCharacteristicNotification(char, true)) {
+                    Log.i("tag", "notification enabled")
+                } else {
+                    Log.e("tag", "notification could not be enabled")
+                }
+                var desc = char.descriptors[0]
+                val wr_status = gatt.writeDescriptor(
+                    desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                )
+                if (wr_status == 0) {
+                    Log.i("tag", "gnss write status: $wr_status")
+                } else {
+                    Log.e("tag", "gnss write status: $wr_status")
+                }
+            }
+        }
     }
 }

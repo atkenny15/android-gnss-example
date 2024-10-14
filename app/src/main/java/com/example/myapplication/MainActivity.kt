@@ -53,20 +53,27 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun BLEScanScreen() {
         var isScanning by remember { mutableStateOf(false) }
+
         var gnssText by remember { mutableStateOf(String()) }
-        var scanCb by remember {
-            mutableStateOf(MyScanCallback { cb ->
+        val MAX_LINES = 30
+        val lines = ArrayDeque<String>()
+        val updateText = { text: String ->
+            lines.addFirst(text)
+            while (lines.size > MAX_LINES) {
+                lines.removeLast()
+            }
+            gnssText = lines.joinToString("\n")
+        }
+
+        val scanCb by remember {
+            mutableStateOf(MyScanCallback({ cb ->
                 Log.i("tag", "onFinish -> stopScan")
                 stopScan(cb)
                 isScanning = false
-            })
+            }, updateText))
         }
         var gatt by remember {
             mutableStateOf<BluetoothGatt?>(null)
-        }
-
-        var updateText = { text: String ->
-            gnssText = text
         }
 
         Column(
@@ -89,6 +96,7 @@ class MainActivity : ComponentActivity() {
                         scanCb.result = null
                     }
                     if (checkPermissions()) {
+                        updateText("startScan()")
                         Log.i("tag", "startScan()")
                         startScan(scanCb)
                         isScanning = true
@@ -107,7 +115,7 @@ class MainActivity : ComponentActivity() {
                     }) {
                         Text("Pair")
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
                     Button({
                         gatt = setupGatt(scanCb.result!!.device!!, gatt, updateText)
                     }) {
@@ -117,8 +125,8 @@ class MainActivity : ComponentActivity() {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("Device: ${scanCb.result?.device?.name ?: "Unknown"} - ${scanCb.result?.device?.address ?: "Unknown"}")
                 Spacer(modifier = Modifier.height(16.dp))
-                Text(gnssText)
             }
+            Text(gnssText)
         }
     }
 
@@ -206,9 +214,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-class MyScanCallback(onFinish: (MyScanCallback) -> Unit) : ScanCallback() {
+class MyScanCallback(onFinish: (MyScanCallback) -> Unit, updateText: (String) -> Unit) :
+    ScanCallback() {
     var result: ScanResult? = null
     val onFinish = onFinish
+    val updateText = updateText
 
     private fun isMatch(result: ScanResult): Boolean {
         if (result.device.name == "FlySight") {
@@ -228,6 +238,7 @@ class MyScanCallback(onFinish: (MyScanCallback) -> Unit) : ScanCallback() {
                 }
             }
 
+            updateText("found: ${s}")
             Log.i("tag", "found: ${s}")
             this.result = result
             onFinish(this)
@@ -239,6 +250,7 @@ class MyScanCallback(onFinish: (MyScanCallback) -> Unit) : ScanCallback() {
 
     override fun onScanResult(callbackType: Int, result: ScanResult) {
         super.onScanResult(callbackType, result)
+        updateText("found ${result.device.name} : ${result.device.address}")
         Log.i("tag", "found ${result.device.name} : ${result.device.address}")
 
         if (this.result != null) {
@@ -256,12 +268,14 @@ class MyScanCallback(onFinish: (MyScanCallback) -> Unit) : ScanCallback() {
         }
 
         for (result in results) {
+            updateText("found ${result.device.name} : ${result.device.address}")
             Log.i("tag", "found ${result.device.name} : ${result.device.address}")
             if (isMatch(result)) {
                 break;
             }
             if (result.device.name == "FlySight") {
-                Log.i("tag", "found")
+                updateText("found flysight")
+                Log.i("tag", "found flysight")
                 this.result = result
                 onFinish(this)
                 break;
@@ -271,28 +285,32 @@ class MyScanCallback(onFinish: (MyScanCallback) -> Unit) : ScanCallback() {
 
     override fun onScanFailed(errorCode: Int) {
         super.onScanFailed(errorCode)
+        updateText("scan failed ${errorCode}")
         Log.e("tag", "scan failed ${errorCode}")
     }
 }
 
 class MyBluetoothGattCallback(updateText: (String) -> Unit) : BluetoothGattCallback() {
-    val updateText = updateText;
-    val GNSS_PV_UUID = UUID.fromString("00000000-8e22-4541-9d4c-21edae82ed19");
+    private val updateText = updateText;
+    private val GNSS_PV_UUID = UUID.fromString("00000000-8e22-4541-9d4c-21edae82ed19");
+    private val lines = ArrayDeque<String>()
+    private val MAX_LINES = 20;
     //val CRS_TX_UUID = UUID.fromString("00000001-8e22-4541-9d4c-21edae82ed19")
     //val CRS_RX_UUID = UUID.fromString("00000002-8e22-4541-9d4c-21edae82ed19");
 
     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
         super.onConnectionStateChange(gatt, status, newState)
-
+        updateText("state change $status $newState")
         Log.i("tag", "state change $status $newState")
-
         when (newState) {
             BluetoothProfile.STATE_CONNECTED -> {
+                updateText("connected")
                 Log.i("tag", "connected")
                 gatt.discoverServices()
             }
 
             BluetoothProfile.STATE_DISCONNECTED -> {
+                updateText("disconnected")
                 Log.i("tag", "disconnected")
                 // Device disconnected
                 gatt.close() // Always close the connection
@@ -302,11 +320,14 @@ class MyBluetoothGattCallback(updateText: (String) -> Unit) : BluetoothGattCallb
 
     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
         super.onServicesDiscovered(gatt, status)
+        updateText("services discovered $status")
         Log.i("tag", "services discovered $status")
         if (status == BluetoothGatt.GATT_SUCCESS) {
             if (gatt.requestMtu(256)) {
+                updateText("requestMtu successful")
                 Log.i("tag", "requestMtu successful")
             } else {
+                updateText("requestMtu unsuccessful")
                 Log.e("tag", "requestMtu unsuccessful")
             }
         }
@@ -314,10 +335,12 @@ class MyBluetoothGattCallback(updateText: (String) -> Unit) : BluetoothGattCallb
 
     override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
         super.onMtuChanged(gatt, mtu, status)
+        updateText("MTU changed $mtu $status")
         Log.i("tag", "MTU changed $mtu $status")
         if (gatt != null && status == BluetoothGatt.GATT_SUCCESS) {
+            updateText("enable gnss notifications")
             Log.i("tag", "enable gnss notifications")
-            enableGnssNotifications(gatt, GNSS_PV_UUID)
+            enableGnssNotifications(gatt, GNSS_PV_UUID, updateText)
         }
     }
 
@@ -335,6 +358,7 @@ class MyBluetoothGattCallback(updateText: (String) -> Unit) : BluetoothGattCallb
         gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
     ) {
         super.onCharacteristicWrite(gatt, characteristic, status)
+        updateText("char write $status")
         Log.i("tag", "char write $status")
     }
 
@@ -345,6 +369,7 @@ class MyBluetoothGattCallback(updateText: (String) -> Unit) : BluetoothGattCallb
         logBytes("char ${characteristic.uuid} changed", value)
         if (characteristic.uuid == GNSS_PV_UUID) {
             if (value.size != 28) {
+                updateText("Got ${value.size} bytes but expected 28 for GNSS characteristic")
                 Log.e("tag", "Got ${value.size} bytes but expected 28 for GNSS characteristic")
             } else {
                 val data = GnssData(value)
@@ -358,6 +383,7 @@ class MyBluetoothGattCallback(updateText: (String) -> Unit) : BluetoothGattCallb
         gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int
     ) {
         super.onDescriptorWrite(gatt, descriptor, status)
+        updateText("desc write $status")
         Log.i("tag", "desc write $status")
     }
 }
@@ -391,7 +417,16 @@ class GnssData {
     }
 
     override fun toString(): String {
-        return "${iTow.toDouble() / 1e3}, ${lon.toDouble() / 1e7}, ${lat.toDouble() / 1e7}, " + "${hMsl.toDouble() / 1e3}, ${velN.toDouble() / 1e3}, ${velE.toDouble() / 1e3}, " + "${velD.toDouble() / 1e3}"
+        return String.format(
+            "%.03f, %.07f, %.07f, %.03f, %.03f, %.03f, %.03f",
+            iTow.toDouble() / 1e3,
+            lon.toDouble() / 1e7,
+            lat.toDouble() / 1e7,
+            hMsl.toDouble() / 1e3,
+            velN.toDouble() / 1e3,
+            velE.toDouble() / 1e3,
+            velD.toDouble() / 1e3
+        )
     }
 }
 
@@ -403,22 +438,27 @@ fun getInt(bytes: ByteArray, offset: Int): Int {
     return ret.toInt()
 }
 
-fun enableGnssNotifications(gatt: BluetoothGatt, uuid: UUID) {
+fun enableGnssNotifications(gatt: BluetoothGatt, uuid: UUID, updateText: (String) -> Unit) {
     val services = gatt.services
     services.forEach { service ->
+        updateText("service ${service.uuid.toString()}")
         Log.i("tag", "service ${service.uuid.toString()}")
         for (char in service.characteristics) {
+            updateText("char: ${char.uuid.toString()}")
             Log.i("tag", "char: ${char.uuid.toString()}")
         }
 
         var char = service.getCharacteristic(uuid)
         if (char != null) {
             if (char.descriptors.isEmpty()) {
+                updateText("no descriptors for GNSS_PV_UUID")
                 Log.e("tag", "no descriptors for GNSS_PV_UUID")
             } else {
                 if (gatt.setCharacteristicNotification(char, true)) {
+                    updateText("notification enabled")
                     Log.i("tag", "notification enabled")
                 } else {
+                    updateText("notification could not be enabled")
                     Log.e("tag", "notification could not be enabled")
                 }
                 var desc = char.descriptors[0]
@@ -426,8 +466,10 @@ fun enableGnssNotifications(gatt: BluetoothGatt, uuid: UUID) {
                     desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 )
                 if (wr_status == 0) {
+                    updateText("gnss write status: $wr_status")
                     Log.i("tag", "gnss write status: $wr_status")
                 } else {
+                    updateText("gnss write status: $wr_status")
                     Log.e("tag", "gnss write status: $wr_status")
                 }
             }

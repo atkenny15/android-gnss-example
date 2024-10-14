@@ -134,7 +134,16 @@ class MainActivity : ComponentActivity() {
         dev: BluetoothDevice, gatt: BluetoothGatt?, updateGnssText: (String) -> Unit
     ): BluetoothGatt? {
         if (gatt == null) {
-            return dev.connectGatt(this, false, MyBluetoothGattCallback(updateGnssText))
+            // Adding BluetoothDevice.TRANSPORT_LE seems to help with a status
+            // error of 133 in onConnectionStateChange when trying to connect.
+            //
+            // https://stackoverflow.com/questions/25330938/android-bluetoothgatt-status-133-register-callback
+            return dev.connectGatt(
+                this,
+                false,
+                MyBluetoothGattCallback(updateGnssText),
+                BluetoothDevice.TRANSPORT_LE
+            )
         } else {
             gatt.disconnect()
             return null
